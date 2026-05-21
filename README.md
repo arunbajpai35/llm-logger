@@ -116,7 +116,43 @@ See `prisma/schema.prisma`. Headlines:
 - [x] Cancel conversation — UI button + `PATCH /api/conversations/:id`.
 - [x] List conversations — `/conversations` page.
 - [x] Resume a conversation — `/?id=<conversationId>`.
-- [ ] k8s deploy — not done; would add a Helm chart split into `web`/`worker` deployments.
+- [x] k8s deploy — raw manifests under `k8s/` (Namespace, ConfigMap, Secret, Postgres StatefulSet, Redis StatefulSet, migrate Job, web Deployment + NodePort Service, worker Deployment). Verified end-to-end on a local `kind` cluster.
+
+## Deploy on Kubernetes (kind)
+
+Raw manifests live in `k8s/`. The flow below brings the whole stack up on a local [kind](https://kind.sigs.k8s.io/) cluster — same containers as `docker compose`, just orchestrated by k8s.
+
+```bash
+# 1. Build the images locally
+docker compose build app worker
+
+# 2. Create a kind cluster that maps NodePort 30000 -> host 3000
+kind create cluster --config k8s/kind-cluster.yaml
+
+# 3. Load local images into the cluster (no registry needed)
+kind load docker-image llm-logger-app:latest llm-logger-worker:latest --name llm-logger
+
+# 4. Namespace + ConfigMap
+kubectl apply -f k8s/namespace.yaml -f k8s/configmap.yaml
+
+# 5. Secrets — supply your provider keys. Either copy the example and edit:
+cp k8s/secret.example.yaml k8s/secret.yaml      # k8s/secret.yaml is gitignored
+kubectl apply -f k8s/secret.yaml
+# ...or create directly:
+kubectl -n llm-logger create secret generic app-secrets \
+  --from-literal=OPENAI_API_KEY=sk-... \
+  --from-literal=GROQ_API_KEY=gsk_...
+
+# 6. Datastores, schema migration, and the app
+kubectl apply -f k8s/postgres.yaml -f k8s/redis.yaml
+kubectl apply -f k8s/migrate-job.yaml
+kubectl apply -f k8s/web.yaml -f k8s/worker.yaml
+
+# 7. Open the app
+open http://localhost:3000
+```
+
+Topology — `web` and `worker` are separate Deployments so they scale independently. Postgres and Redis are StatefulSets with PVCs (1 replica each; dev-grade). The `prisma-migrate` Job waits for Postgres via an init container, then runs `prisma migrate deploy` once per install.
 
 ## Project layout
 

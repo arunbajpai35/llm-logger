@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: llm-logger
+data:
+  DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+  REDIS_URL: redis://redis:6379
+  NODE_ENV: production
