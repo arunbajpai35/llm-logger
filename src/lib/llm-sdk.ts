@@ -12,6 +12,9 @@ import OpenAI, { AzureOpenAI } from "openai";
 import { randomUUID } from "node:crypto";
 import { preview } from "./redact";
 import type { InferenceLogInput } from "./schemas";
+import { breakerFor, CircuitOpenError } from "./circuit-breaker";
+
+export { CircuitOpenError };
 
 export type Provider = "openai" | "groq" | "anthropic";
 
@@ -202,7 +205,9 @@ export class LLMClient {
     let status: "success" | "error" | "cancelled" = "success";
     let errorMessage: string | undefined;
 
+    const breaker = breakerFor(provider);
     try {
+      breaker.precheck();
       for await (const chunk of adapter.stream(req, signal)) {
         if (firstByteMs === undefined && chunk.delta) firstByteMs = performance.now() - startMs;
         if (chunk.delta) {
@@ -212,12 +217,18 @@ export class LLMClient {
         if (chunk.usage) usage = chunk.usage;
         if (chunk.finish) finish = chunk.finish;
       }
+      breaker.markSuccess();
     } catch (err: any) {
       if (err?.name === "AbortError" || signal.aborted) {
         status = "cancelled";
+        // Don't count user cancels as upstream failures.
+      } else if (err instanceof CircuitOpenError) {
+        status = "error";
+        errorMessage = `circuit_open:${provider}`;
       } else {
         status = "error";
         errorMessage = err?.message ?? String(err);
+        breaker.markFailure();
       }
     } finally {
       const completedAt = new Date();
