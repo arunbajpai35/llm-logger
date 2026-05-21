@@ -96,6 +96,7 @@ See `prisma/schema.prisma`. Headlines:
 
 ## Tradeoffs
 
+- **Next.js (TypeScript) over Go/FastAPI.** My primary stack is Go/Java/Python — Next.js wins here because it collapses chat UI + streaming chat API + ingest API + dashboard SSR into one process, which is the smallest credible end-to-end shape for a take-home. Production would split these (Go for the SDK + ingest API, kept as a separate library; React app served independently). See "Components" for the natural split point.
 - **BullMQ over Kafka.** Kafka would be the real production choice for an ingestion bus. BullMQ + Redis is the smallest credible event-driven setup — it gets you retries, dedup, dead-letter, and concurrency without standing up Zookeeper/Kraft. Easy to swap later: the worker is just a function.
 - **Postgres over Clickhouse/Timescale.** A real metrics workload would use Clickhouse for log volume and aggregation speed. For this scale, Postgres + the right indexes + `PERCENTILE_CONT` is fine and avoids a second datastore.
 - **Regex PII redaction.** Will miss anything not on the pattern list. Production would use Microsoft Presidio or a similar entity recognizer. Documented limitation, not a gap I'd ship to prod.
@@ -116,6 +117,33 @@ See `prisma/schema.prisma`. Headlines:
 8. **Anthropic + Gemini adapters.** Interface is already there; ~30 lines each.
 9. **Tests.** Vitest for the SDK wrapper (the part most worth pinning down) + a Playwright happy-path for the chat UI.
 10. **k8s deploy.** Helm chart with separate deployments for `web`, `worker`, `postgres`, `redis`, HPA on the worker.
+
+## Performance
+
+Real load test against `/api/ingest` on the local kind cluster — single `web` replica, single `worker` replica, single-node Postgres + Redis, all on one laptop. Run via `npm run loadtest` (`scripts/loadtest.mjs`, uses [autocannon](https://github.com/mcollina/autocannon)).
+
+```
+target:   http://host.docker.internal:3000/api/ingest
+duration: 30 s
+connections: 50
+
+requests:    3093   (103 req/s sustained)
+latency:     p50 = 396 ms   p95 = 911 ms   p99 = 3116 ms   max = 9648 ms
+non-2xx:     0
+errors:      0
+timeouts:    0
+```
+
+The full round-trip is exercised — each request goes through Zod validation, BullMQ enqueue, the Redis hop, the worker dequeue, the per-model cost calculation, and the Postgres upsert. No mocks. After the run, `/api/metrics` reported 4,042 rows in `InferenceLog` for the 24h window with the expected per-model cost totals.
+
+The bottleneck at this scale is the worker → Postgres write loop (concurrency 8). Horizontally scaling `worker` is the natural lever; the Deployment is stateless and `requestId`-keyed upserts make retries idempotent.
+
+## Reliability features
+
+- **Per-IP rate limit on `/api/chat`** — Redis fixed-window via `INCR`+`PEXPIRE`. Defaults to 30 req/min/IP (`CHAT_RATE_LIMIT_PER_MIN`). Returns `429` with `Retry-After`. See `src/lib/rate-limit.ts`.
+- **Per-conversation token budget cap** — sums `totalTokens` across successful logs for a conversation and refuses further turns over the cap (`CONVERSATION_TOKEN_CAP`, default 200k). Stops runaway loops and accidental cost spikes.
+- **Circuit breaker on provider calls** — per-process, per-provider. Five consecutive failures open the breaker; 30 s cooldown, then a probe. Implementation in `src/lib/circuit-breaker.ts`. User-initiated `AbortError` and `cancelled` outcomes are not counted as upstream failures.
+- **Real per-model cost** — `src/lib/pricing.ts` is the rate table; the worker computes `costUsd` at ingest time and stores it on `InferenceLog`. The dashboard sums `costUsd` directly (no hardcoded blended rates).
 
 ## Bonus checklist
 
