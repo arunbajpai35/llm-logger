@@ -2,6 +2,7 @@ import { Worker, UnrecoverableError } from "bullmq";
 import { prisma } from "../lib/prisma";
 import { queueConnection } from "../lib/queue";
 import { inferenceLogSchema } from "../lib/schemas";
+import { computeCostUsd } from "../lib/pricing";
 
 const worker = new Worker(
   "inference-logs",
@@ -12,6 +13,13 @@ const worker = new Worker(
       throw new UnrecoverableError("validation_failed: " + JSON.stringify(parsed.error.issues));
     }
     const d = parsed.data;
+
+    const costUsd = computeCostUsd({
+      provider: d.provider,
+      model: d.model,
+      promptTokens: d.promptTokens,
+      completionTokens: d.completionTokens,
+    });
 
     const data = {
       conversationId: d.conversationId,
@@ -24,6 +32,7 @@ const worker = new Worker(
       promptTokens: d.promptTokens,
       completionTokens: d.completionTokens,
       totalTokens: d.totalTokens,
+      costUsd: costUsd ?? null,
       inputPreview: d.inputPreview,
       outputPreview: d.outputPreview,
       metadata: d.metadata ?? {},

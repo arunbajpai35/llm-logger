@@ -58,6 +58,10 @@ model InferenceLog {
   completionTokens Int?
   totalTokens      Int?
 
+  // Computed at ingest time from a (provider, model) price table. Nullable
+  // because we may not have a rate for an unfamiliar model.
+  costUsd          Decimal? @db.Decimal(12, 8)
+
   // Previews (truncated for privacy + size; full text in Message)
   inputPreview     String?
   outputPreview    String?

@@ -35,7 +35,12 @@ export async function GET() {
       where: { createdAt: { gte: since } },
       _count: true,
       _avg: { latencyMs: true, timeToFirstByteMs: true },
-      _sum: { totalTokens: true, promptTokens: true, completionTokens: true },
+      _sum: {
+        totalTokens: true,
+        promptTokens: true,
+        completionTokens: true,
+        costUsd: true,
+      },
     }),
   ]);
 
@@ -52,6 +57,8 @@ export async function GET() {
       totalTokens: Number(totals._sum.totalTokens ?? 0),
       promptTokens: Number(totals._sum.promptTokens ?? 0),
       completionTokens: Number(totals._sum.completionTokens ?? 0),
+      // Decimal -> string -> number. Sum is in dollars, six-decimal precision.
+      costUsd: Number(totals._sum.costUsd?.toString() ?? "0"),
     },
     buckets: rows.map((r) => ({
       bucket: r.bucket,

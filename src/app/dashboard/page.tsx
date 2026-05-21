@@ -16,6 +16,7 @@ type Metrics = {
     totalTokens: number;
     promptTokens: number;
     completionTokens: number;
+    costUsd: number;
   };
   buckets: Array<{
     bucket: string;
@@ -127,9 +128,9 @@ export default function DashboardPage() {
         <Kpi label="Prompt tokens" value={fmt(m.summary.promptTokens)} />
         <Kpi label="Completion tokens" value={fmt(m.summary.completionTokens)} />
         <Kpi
-          label="Cost (est.)"
-          value={"$" + ((m.summary.totalTokens / 1_000_000) * 0.5).toFixed(3)}
-          sub="@ $0.50 / 1M tok"
+          label="Cost"
+          value={"$" + (m.summary.costUsd ?? 0).toFixed(4)}
+          sub="per-model rates"
         />
       </div>
 
