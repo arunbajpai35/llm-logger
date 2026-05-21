@@ -52,7 +52,7 @@ npm run worker                           # in another terminal
 
 **Flow on one chat turn:**
 1. Browser POSTs to `/api/chat`. The route creates/finds the conversation, builds a context window (last 20 messages), and calls the SDK wrapper.
-2. The SDK wrapper streams tokens from OpenAI back to the browser **and** measures latency, TTFB, token usage, finish reason.
+2. The SDK wrapper streams tokens from the configured provider (OpenAI, Azure OpenAI, or Groq) back to the browser **and** measures latency, TTFB, token usage, finish reason.
 3. When the stream ends (success, error, or client cancel), the SDK fires a single POST to `/api/ingest` with the inference log. This is fire-and-forget — logging must never block or break the chat.
 4. `/api/ingest` validates with Zod and enqueues a job to BullMQ (keyed by `requestId` for dedup).
 5. The worker drains the queue and upserts into Postgres. Upsert + dedup key = retries are idempotent.
