@@ -2,6 +2,8 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -316,23 +318,22 @@ function MessageRow({ msg, pending }: { msg: Msg; pending: boolean }) {
         {isUser ? "You" : "L"}
       </div>
       <div className={"flex-1 min-w-0 " + (isUser ? "text-right" : "")}>
-        <div
-          className={
-            "inline-block max-w-full whitespace-pre-wrap text-[15px] leading-relaxed " +
-            (isUser
-              ? "bg-[var(--bg-hover)] border border-[var(--border)] rounded-2xl rounded-tr-md px-4 py-2.5 text-left"
-              : "")
-          }
-        >
-          {msg.content}
-          {pending && (
-            <span className="inline-flex gap-1 ml-1">
-              <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
-              <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
-              <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
-            </span>
-          )}
-        </div>
+        {isUser ? (
+          <div className="inline-block max-w-full whitespace-pre-wrap text-[15px] leading-relaxed bg-[var(--bg-hover)] border border-[var(--border)] rounded-2xl rounded-tr-md px-4 py-2.5 text-left">
+            {msg.content}
+          </div>
+        ) : (
+          <div className="md-body max-w-full">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+            {pending && (
+              <span className="inline-flex gap-1 ml-1 align-middle">
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] inline-block" />
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] inline-block" />
+                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--text-muted)] inline-block" />
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

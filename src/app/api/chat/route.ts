@@ -52,17 +52,6 @@ export async function POST(req: NextRequest) {
   });
 
   // Last 20 messages so we don't blow the token budget. Take newest, then reverse for chronology.
-  const recent = await prisma.message.findMany({
-    where: { conversationId },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-  });
-  const history = recent.reverse();
-  const chatMessages: ChatMessage[] = [
-    { role: "system", content: "You are a helpful assistant." },
-    ...history.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content })),
-  ];
-
   const azure =
     process.env.AZURE_OPENAI_API_KEY &&
     process.env.AZURE_OPENAI_ENDPOINT &&
@@ -89,6 +78,31 @@ export async function POST(req: NextRequest) {
       headers: { "content-type": "application/json" },
     });
   }
+
+  // Resolve the display model name so the system prompt is self-aware.
+  const resolvedModel =
+    model ??
+    (resolvedProvider === "openai"
+      ? (azure?.deployment ?? "gpt-4o-mini")
+      : resolvedProvider === "groq"
+        ? "llama-3.3-70b-versatile"
+        : "claude-3-5-sonnet");
+
+  const recent = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  const history = recent.reverse();
+  const systemPrompt = [
+    `You are a helpful assistant running on ${resolvedProvider} (model: ${resolvedModel}).`,
+    `Format responses in clean GitHub-flavored Markdown: use headings sparingly, prefer short paragraphs and bullet lists, and use fenced code blocks with language tags for code.`,
+    `Keep answers concise unless the user asks for depth.`,
+  ].join(" ");
+  const chatMessages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...history.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content })),
+  ];
 
   const controller = new AbortController();
   // If the browser disconnects, abort the upstream call.
