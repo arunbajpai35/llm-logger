@@ -4,6 +4,8 @@ A lightweight inference logging and ingestion system for an LLM application: a s
 
 ## Demo
 
+**Live:** https://puerto-environmental-prefers-sur.trycloudflare.com — exposed via Cloudflare Quick Tunnel to the local kind cluster, so the link is only up while the tunnel is running. If it's down by the time you read this, the screenshots below show the same app.
+
 | Chat (empty) | Chat (multi-turn, markdown) |
 |---|---|
 | ![Chat empty](docs/screenshots/01-chat-empty.png) | ![Chat conversation](docs/screenshots/02-chat-conversation.png) |
