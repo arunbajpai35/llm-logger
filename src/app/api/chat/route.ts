@@ -11,6 +11,7 @@ const requestSchema = z.object({
   conversationId: z.string().optional(),
   message: z.string().min(1),
   model: z.string().optional(),
+  provider: z.enum(["openai", "groq", "anthropic"]).optional(),
 });
 
 const encoder = new TextEncoder();
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
       headers: { "content-type": "application/json" },
     });
   }
-  const { message, model } = parsed.data;
+  const { message, model, provider } = parsed.data;
   let conversationId = parsed.data.conversationId;
 
   // Create conversation on first message, with a title derived from the prompt.
@@ -77,7 +78,17 @@ export async function POST(req: NextRequest) {
   const sdk = new LLMClient(logSink, {
     azure,
     openaiApiKey: process.env.OPENAI_API_KEY,
+    groqApiKey: process.env.GROQ_API_KEY,
   });
+
+  const configured = sdk.configuredProviders();
+  const resolvedProvider = provider ?? (configured.includes("openai") ? "openai" : configured[0]);
+  if (!resolvedProvider) {
+    return new Response(JSON.stringify({ error: "no LLM provider configured" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
 
   const controller = new AbortController();
   // If the browser disconnects, abort the upstream call.
@@ -95,7 +106,7 @@ export async function POST(req: NextRequest) {
       let assembled = "";
       try {
         for await (const delta of sdk.chatStream(
-          { conversationId: convoIdLocal, messages: chatMessages, model },
+          { conversationId: convoIdLocal, messages: chatMessages, model, provider: resolvedProvider },
           controller.signal
         )) {
           assembled += delta;

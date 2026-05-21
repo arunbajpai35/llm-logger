@@ -31,9 +31,24 @@ function ChatPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [providers, setProviders] = useState<string[]>([]);
+  const [provider, setProvider] = useState<string>("openai");
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    fetch("/api/providers")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data?.providers) && data.providers.length > 0) {
+          setProviders(data.providers);
+          if (!data.providers.includes(provider)) setProvider(data.providers[0]);
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!initialId) return;
@@ -72,7 +87,7 @@ function ChatPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ conversationId, message: userMsg.content }),
+        body: JSON.stringify({ conversationId, message: userMsg.content, provider }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -171,7 +186,22 @@ function ChatPage() {
             </span>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {providers.length > 1 && (
+            <select
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              disabled={streaming}
+              className="text-xs rounded-md px-2 py-1.5 bg-[var(--bg-hover)] border border-[var(--border)] outline-none disabled:opacity-60"
+              aria-label="Provider"
+            >
+              {providers.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          )}
           {conversationId && (
             <button
               onClick={cancelConversation}

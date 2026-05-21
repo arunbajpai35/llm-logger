@@ -7,7 +7,8 @@ A lightweight inference logging and ingestion system for an LLM application: a s
 ```bash
 # 1. Set your API key
 cp .env.example .env
-# edit .env and set OPENAI_API_KEY
+# edit .env and set OPENAI_API_KEY (or AZURE_OPENAI_* for Azure).
+# Optional: also set GROQ_API_KEY to get a second provider in the UI dropdown — free at https://console.groq.com
 
 # 2. Bring everything up
 docker compose up --build
@@ -106,7 +107,7 @@ See `prisma/schema.prisma`. Headlines:
 
 ## Bonus checklist
 
-- [x] Multi-provider support — `ProviderAdapter` interface, OpenAI implemented, Anthropic is a drop-in.
+- [x] Multi-provider support — `ProviderAdapter` interface with OpenAI (incl. Azure) and Groq implemented; UI exposes a per-message provider selector when more than one is configured. Anthropic is a drop-in.
 - [x] Streaming responses — end-to-end via `ReadableStream` and OpenAI's stream.
 - [x] Latency + throughput + errors dashboards — Recharts, refreshes every 10s.
 - [x] Docker Compose one-command setup — `docker compose up --build`.

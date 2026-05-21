@@ -3,7 +3,7 @@ import { z } from "zod";
 export const inferenceLogSchema = z.object({
   requestId: z.string().min(1),
   conversationId: z.string().optional(),
-  provider: z.enum(["openai", "anthropic"]),
+  provider: z.enum(["openai", "groq", "anthropic"]),
   model: z.string(),
   status: z.enum(["success", "error", "cancelled"]),
   errorMessage: z.string().optional(),

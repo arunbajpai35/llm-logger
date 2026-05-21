@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { preview } from "./redact";
 import type { InferenceLogInput } from "./schemas";
 
-export type Provider = "openai" | "anthropic";
+export type Provider = "openai" | "groq" | "anthropic";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -113,10 +113,53 @@ class OpenAIAdapter implements ProviderAdapter {
   }
 }
 
+// Groq is OpenAI-API-compatible, so the OpenAI SDK works as-is with a baseURL override.
+class GroqAdapter implements ProviderAdapter {
+  name: Provider = "groq";
+  private client: OpenAI;
+
+  constructor(apiKey: string) {
+    this.client = new OpenAI({ apiKey, baseURL: "https://api.groq.com/openai/v1" });
+  }
+
+  async *stream(req: ChatRequest, signal: AbortSignal) {
+    const model = req.model ?? "llama-3.3-70b-versatile";
+    const stream = await this.client.chat.completions.create(
+      {
+        model,
+        messages: req.messages,
+        stream: true,
+        stream_options: { include_usage: true },
+      },
+      { signal }
+    );
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content ?? "";
+      const finish = chunk.choices[0]?.finish_reason ?? undefined;
+      const usage = chunk.usage
+        ? {
+            prompt: chunk.usage.prompt_tokens,
+            completion: chunk.usage.completion_tokens,
+            total: chunk.usage.total_tokens,
+          }
+        : undefined;
+      if (delta || finish || usage) yield { delta, finish: finish ?? undefined, usage };
+    }
+  }
+}
+
+const DEFAULT_MODEL: Record<Provider, string> = {
+  openai: "gpt-4o-mini",
+  groq: "llama-3.3-70b-versatile",
+  anthropic: "claude-3-5-sonnet",
+};
+
 // Main wrapper.
 export class LLMClient {
   private adapters: Record<Provider, ProviderAdapter | null> = {
     openai: null,
+    groq: null,
     anthropic: null,
   };
 
@@ -125,6 +168,7 @@ export class LLMClient {
     opts: {
       openaiApiKey?: string;
       azure?: { apiKey: string; endpoint: string; apiVersion: string; deployment: string };
+      groqApiKey?: string;
     } = {}
   ) {
     if (opts.azure) {
@@ -132,6 +176,13 @@ export class LLMClient {
     } else if (opts.openaiApiKey) {
       this.adapters.openai = new OpenAIAdapter({ mode: "openai", apiKey: opts.openaiApiKey });
     }
+    if (opts.groqApiKey) {
+      this.adapters.groq = new GroqAdapter(opts.groqApiKey);
+    }
+  }
+
+  configuredProviders(): Provider[] {
+    return (Object.keys(this.adapters) as Provider[]).filter((p) => this.adapters[p] !== null);
   }
 
   // Streaming chat. Yields text chunks; emits a log when done (or on error / cancel).
@@ -141,7 +192,7 @@ export class LLMClient {
     if (!adapter) throw new Error(`Provider ${provider} not configured`);
 
     const requestId = randomUUID();
-    const model = req.model ?? (provider === "openai" ? "gpt-4o-mini" : "claude-3-5-sonnet");
+    const model = req.model ?? DEFAULT_MODEL[provider];
     const startedAt = new Date();
     const startMs = performance.now();
     let firstByteMs: number | undefined;
