@@ -1,0 +1,77 @@
+// Schema design decisions:
+// - Conversation is top-level so we can list/resume/cancel without scanning messages
+// - Message and InferenceLog are SEPARATE tables. A failed inference produces a log but no assistant message.
+//   This also lets us query metadata (latency p95, error rates) without touching message text.
+// - JSONB `metadata` column for provider-specific raw response so the schema doesn't break when fields change
+// - Indexes on the columns the dashboard and conversation list actually filter/sort by
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id        String   @id @default(cuid())
+  title     String?
+  status    String   @default("active") // active | cancelled | completed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages      Message[]
+  inferenceLogs InferenceLog[]
+
+  @@index([status, updatedAt])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String // user | assistant | system
+  content        String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model InferenceLog {
+  id             String   @id @default(cuid())
+  conversationId String?
+  requestId      String   @unique // client-generated UUID, used for idempotent ingestion
+  provider       String   // openai | anthropic | ...
+  model          String
+  status         String   // success | error | cancelled
+  errorMessage   String?
+
+  // Performance
+  latencyMs        Int?
+  timeToFirstByteMs Int?
+
+  // Tokens
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+
+  // Previews (truncated for privacy + size; full text in Message)
+  inputPreview     String?
+  outputPreview    String?
+
+  // Flexible bag for provider-specific data, finish_reason, etc.
+  metadata Json?
+
+  startedAt   DateTime
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([provider, model, createdAt])
+  @@index([status, createdAt])
+}
