@@ -2,6 +2,16 @@
 
 A lightweight inference logging and ingestion system for an LLM application: a streaming chatbot, an SDK that captures inference metadata around every model call, an event-driven ingestion pipeline, and a dashboard for latency / throughput / errors.
 
+## Demo
+
+| Chat (empty) | Chat (multi-turn, markdown) |
+|---|---|
+| ![Chat empty](docs/screenshots/01-chat-empty.png) | ![Chat conversation](docs/screenshots/02-chat-conversation.png) |
+
+| Conversations (list / resume / cancel) | Dashboard (latency, throughput, tokens, cost) |
+|---|---|
+| ![Conversations](docs/screenshots/03-conversations.png) | ![Dashboard](docs/screenshots/04-dashboard.png) |
+
 ## Quickstart
 
 ```bash
