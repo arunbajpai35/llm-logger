@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "worker": "tsx src/workers/ingest-worker.ts"
+    "worker": "tsx src/workers/ingest-worker.ts",
+    "loadtest": "node scripts/loadtest.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "autocannon": "^7.15.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",
