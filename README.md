@@ -138,6 +138,91 @@ The full round-trip is exercised — each request goes through Zod validation, B
 
 The bottleneck at this scale is the worker → Postgres write loop (concurrency 8). Horizontally scaling `worker` is the natural lever; the Deployment is stateless and `requestId`-keyed upserts make retries idempotent.
 
+## Auto-instrumentation (monkey patch)
+
+The SDK ships in two shapes — the explicit facade (`LLMClient` in `src/lib/llm-sdk.ts`) that `/api/chat` uses for the streaming UI, and an **auto-instrumentation layer** that monkey-patches the provider SDKs at boot. With auto-instrumentation, calling the raw `openai` SDK is enough — every `client.chat.completions.create(...)` gets latency / TTFB / token / cost / error metadata logged with zero call-site changes.
+
+```ts
+import OpenAI from "openai";
+import {
+  installAutoInstrumentation,
+  withConversation,
+} from "@/lib/instrument";
+
+installAutoInstrumentation(); // once per process
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// Calls inside this block get logged with the given conversationId.
+await withConversation("conv_123", async () => {
+  const stream = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [{ role: "user", content: "hello" }],
+    stream: true,
+  });
+  for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+});
+```
+
+**Shape.** A small framework (`src/lib/instrument/core.ts`) handles timing, error capture, AsyncLocalStorage-based conversation propagation, and log emission. Each provider gets a small adapter that fills in four shape-specific things — which method to patch, how to read the request, how to walk the response, how to walk the stream. **OpenAI** and **Anthropic** adapters ship today (`src/lib/instrument/openai.ts`, `src/lib/instrument/anthropic.ts`); the OpenAI adapter automatically covers Azure OpenAI, Groq, OpenRouter, Together, Fireworks, vLLM, Ollama — any provider that speaks the OpenAI wire format. A new provider is a ~40-LOC adapter.
+
+**Streaming is supported.** The patch wraps the async iterator returned by `create({ stream: true })` and force-enables `stream_options.include_usage` so token counts arrive in the final chunk. The Anthropic adapter walks `content_block_delta` + `message_delta` events for the same coverage.
+
+**Demo route.** `POST /api/auto-chat` exercises the auto-instrumented path — the route uses the raw `openai` SDK directly (no facade) and only wraps the call in `withConversation`. Compare with `POST /api/chat`, which uses the explicit facade. Both feed the same `/api/ingest` -> BullMQ -> Postgres pipeline.
+
+**Why monkey-patch instead of a facade?** Real apps have dozens of LLM call sites scattered across services. A facade-based logger means refactoring every call site to go through *our* SDK. A monkey patch means `installAutoInstrumentation()` once at boot and every existing `openai.chat.completions.create(...)` gets logged — zero call-site changes for the entire codebase.
+
+### Adding a custom provider
+
+The OpenAI + Anthropic adapters cover most providers (anyone OpenAI-compatible is free; Anthropic proves the framework handles a genuinely different SDK). Three extension points for everything else:
+
+**1. OpenAI-compatible custom endpoint** — point the OpenAI SDK at a different `baseURL`. No new code:
+```ts
+const internal = new OpenAI({ apiKey: "...", baseURL: "https://llm.internal/openai/v1" });
+await internal.chat.completions.create({ model: "internal-7b", messages: [...] });
+// already instrumented because `OpenAI.Chat.Completions.prototype.create` is patched.
+```
+
+**2. Custom SDK that's a JS class** — write a ~40-LOC adapter and register it:
+```ts
+import { patchMethod, registerInstrumentation } from "@/lib/instrument";
+import MyProviderSDK from "@my-org/llm-sdk";
+
+registerInstrumentation(() => {
+  patchMethod({
+    target: MyProviderSDK.Completions,
+    method: "create",
+    provider: "my-org",
+    extractRequest: (args) => ({ provider: "my-org", model: args[0].model, inputText: ..., stream: !!args[0].stream }),
+    handleNonStreaming: (resp) => ({ outputText: resp.text, usage: { prompt: resp.usage.in, completion: resp.usage.out, total: resp.usage.total } }),
+    handleStreaming: () => ({ parse: (chunk) => ({ text: chunk.delta }) }),
+  });
+  return true;
+});
+```
+
+**3. No SDK at all (raw HTTP / gRPC / bespoke wire)** — wrap the call with `logInference`:
+```ts
+import { logInference, withConversation } from "@/lib/instrument";
+
+await withConversation("conv_123", () =>
+  logInference(
+    { provider: "internal-vllm", model: "qwen-72b", inputText: prompt },
+    async (record) => {
+      const resp = await fetch("https://vllm.internal/generate", { method: "POST", body: ... });
+      const data = await resp.json();
+      record.usage({ prompt: data.prompt_tokens, completion: data.completion_tokens, total: data.total_tokens });
+      record.finish(data.finish_reason);
+      return data.text;
+    }
+  )
+);
+```
+
+`/api/auto-chat` is the live demo of path #1 (raw `openai` SDK, patched at boot). `/api/custom-chat` is the live demo of path #3 (raw `fetch()` to Groq, instrumented manually with `logInference`). Both feed the same `/api/ingest` → BullMQ → Postgres pipeline alongside the explicit-facade route at `/api/chat`.
+
+**Why not just OpenTelemetry GenAI spans?** Deliberate scope choice — keeping the custom schema lets the same pipeline serve the existing dashboard without an OTel collector in the deployment. The patch framework is shaped so an OTel exporter would slot in beside `QueueLogSink` (it's an injectable `LogSink`).
+
 ## Reliability features
 
 - **Per-IP rate limit on `/api/chat`** — Redis fixed-window via `INCR`+`PEXPIRE`. Defaults to 30 req/min/IP (`CHAT_RATE_LIMIT_PER_MIN`). Returns `429` with `Retry-After`. See `src/lib/rate-limit.ts`.
