@@ -6,6 +6,14 @@ A lightweight inference logging and ingestion system for an LLM application: a s
 
 **Live:** https://marry-ooze-ferris.ngrok-free.dev — the local kind cluster exposed via ngrok on a static domain. On first visit you'll see a one-click ngrok interstitial ("Visit Site"). The tunnel runs from a laptop, so if it's offline by the time you read this, the screenshots below show the same app.
 
+**Three logging surfaces side-by-side** — all three feed the same `/api/ingest` → BullMQ → Postgres pipeline and show up on the same dashboard:
+
+| Route | What it demonstrates |
+|---|---|
+| `POST /api/chat` | Explicit facade (`LLMClient`) — the path the UI uses. |
+| `POST /api/auto-chat` | Raw `openai` SDK + `withConversation()`. Patched at boot — zero call-site changes vs. unmodified OpenAI code. |
+| `POST /api/custom-chat` | Raw `fetch()` to Groq + `logInference()`. No SDK to patch — works for any custom / internal LLM. |
+
 | Chat (empty) | Chat (multi-turn, markdown) |
 |---|---|
 | ![Chat empty](docs/screenshots/01-chat-empty.png) | ![Chat conversation](docs/screenshots/02-chat-conversation.png) |
@@ -77,7 +85,8 @@ npm run worker                           # in another terminal
 | Chat UI | `src/app/page.tsx` | Streaming chat, supports resume via `?id=`, cancel |
 | Conversations UI | `src/app/conversations/page.tsx` | List, resume, cancel, delete |
 | Dashboard | `src/app/dashboard/page.tsx` | Recharts panels for latency, throughput, errors, tokens |
-| SDK wrapper | `src/lib/llm-sdk.ts` | Multi-provider, streaming, captures metadata, emits to a `LogSink` |
+| SDK wrapper | `src/lib/llm-sdk.ts` | Multi-provider explicit facade, streaming, captures metadata, emits to a `LogSink` |
+| Auto-instrumentation | `src/lib/instrument/` | Monkey-patches `OpenAI` + `Anthropic` SDKs at boot; `logInference()` + `registerInstrumentation()` for custom providers |
 | Ingest API | `src/app/api/ingest/route.ts` | Zod-validates, enqueues to BullMQ |
 | Worker | `src/workers/ingest-worker.ts` | Drains queue, upserts into Postgres |
 | Metrics API | `src/app/api/metrics/route.ts` | 24h aggregates with raw SQL percentiles |
@@ -233,6 +242,7 @@ await withConversation("conv_123", () =>
 ## Bonus checklist
 
 - [x] Multi-provider support — `ProviderAdapter` interface with OpenAI (incl. Azure) and Groq implemented; UI exposes a per-message provider selector when more than one is configured. Anthropic is a drop-in.
+- [x] Agnostic / drop-in inference logging — `installAutoInstrumentation()` monkey-patches the `openai` and `@anthropic-ai/sdk` SDKs at boot. Callers using the raw SDKs get logging for free, no facade in the call site. Custom / internal LLMs without an SDK use `logInference()`; SDKs we don't ship adapters for register via `patchMethod()` + `registerInstrumentation()`. See "Auto-instrumentation" above.
 - [x] Streaming responses — end-to-end via `ReadableStream` and OpenAI's stream.
 - [x] Latency + throughput + errors dashboards — Recharts, refreshes every 10s.
 - [x] Docker Compose one-command setup — `docker compose up --build`.
