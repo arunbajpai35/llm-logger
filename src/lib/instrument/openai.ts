@@ -77,37 +77,53 @@ export function instrumentOpenAI(): boolean {
           : undefined,
       };
     },
-    handleStreaming: () => ({
-      parse: (chunk: any) => {
-        const delta = chunk?.choices?.[0]?.delta;
-        // Tool-using calls stream `delta.tool_calls` with no `delta.content`.
-        // Without capturing them, TTFB never fires and outputPreview shows
-        // empty for any function-calling request. We surface the tool call's
-        // function name + args fragment so the preview is useful.
-        let text: string | undefined = delta?.content;
-        if (!text && Array.isArray(delta?.tool_calls)) {
-          const parts: string[] = [];
-          for (const tc of delta.tool_calls) {
-            const name = tc?.function?.name;
-            const argsFrag = tc?.function?.arguments;
-            if (name) parts.push(`tool:${name}`);
-            if (argsFrag) parts.push(argsFrag);
-          }
-          if (parts.length) text = parts.join(" ");
-        }
-        return {
-          text,
-          finish: chunk?.choices?.[0]?.finish_reason ?? undefined,
-          usage: chunk?.usage
-            ? {
-                prompt: chunk.usage.prompt_tokens,
-                completion: chunk.usage.completion_tokens,
-                total: chunk.usage.total_tokens,
+    handleStreaming: () => {
+      // Parallel tool calls stream interleaved by `index` — chunk A might be
+      // {index: 0, fn: "foo"}, chunk B {index: 1, fn: "bar"}, chunk C
+      // {index: 0, args: "{x"}, chunk D {index: 1, args: "{y"}. Concatenating
+      // by stream order would jumble args across tools. Group by index in a
+      // closure that lives for the duration of this stream.
+      const toolFnByIndex = new Map<number, string>();
+      return {
+        parse: (chunk: any) => {
+          const delta = chunk?.choices?.[0]?.delta;
+          // Tool-using calls stream `delta.tool_calls` with no `delta.content`.
+          // Without capturing them, TTFB never fires and outputPreview shows
+          // empty for any function-calling request. We surface the tool call's
+          // function name + args fragment so the preview is useful.
+          let text: string | undefined = delta?.content;
+          if (!text && Array.isArray(delta?.tool_calls)) {
+            const parts: string[] = [];
+            for (const tc of delta.tool_calls) {
+              const idx = typeof tc?.index === "number" ? tc.index : 0;
+              const name = tc?.function?.name;
+              const argsFrag = tc?.function?.arguments;
+              if (name) {
+                if (!toolFnByIndex.has(idx)) {
+                  toolFnByIndex.set(idx, name);
+                  parts.push(`tool[${idx}]:${name}`);
+                }
               }
-            : undefined,
-        };
-      },
-    }),
+              if (argsFrag) {
+                parts.push(`[${idx}]${argsFrag}`);
+              }
+            }
+            if (parts.length) text = parts.join(" ");
+          }
+          return {
+            text,
+            finish: chunk?.choices?.[0]?.finish_reason ?? undefined,
+            usage: chunk?.usage
+              ? {
+                  prompt: chunk.usage.prompt_tokens,
+                  completion: chunk.usage.completion_tokens,
+                  total: chunk.usage.total_tokens,
+                }
+              : undefined,
+          };
+        },
+      };
+    },
   });
 
   return true;
