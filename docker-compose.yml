@@ -27,6 +27,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot Prisma migration. Both app and worker gate on this so they
+  # never serve traffic / drain the queue against a stale schema. Mirrors
+  # the k8s `prisma-migrate` Job (k8s/migrate-job.yaml).
+  migrate:
+    build:
+      context: .
+      target: worker-runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+    command: ["npx", "prisma", "migrate", "deploy"]
+    restart: "no"
+
   app:
     build:
       context: .
@@ -37,6 +52,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
       REDIS_URL: redis://redis:6379
@@ -49,10 +66,6 @@ services:
       NODE_ENV: production
     ports:
       - "3000:3000"
-    # The standalone bundle has no Prisma CLI, so we can't `migrate deploy`
-    # from this container. The k8s Job handles migrations there; for compose
-    # we rely on the worker container (which keeps the full node_modules and
-    # CLI) to run migrations on startup before draining.
     command: ["node", "server.js"]
 
   worker:
@@ -65,11 +78,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
       REDIS_URL: redis://redis:6379
-    # Run migrations on worker boot (worker image has the Prisma CLI).
-    command: sh -c "npx prisma migrate deploy && npm run worker"
+    command: ["npm", "run", "worker"]
 
 volumes:
   pgdata:
