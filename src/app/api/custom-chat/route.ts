@@ -15,7 +15,8 @@ import { checkConversationBudget } from "@/lib/budget";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// See /api/chat — 5-minute cap so reasoning-model streams aren't cut short.
+export const maxDuration = 300;
 
 const requestSchema = z.object({
   conversationId: z.string().optional(),
