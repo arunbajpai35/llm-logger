@@ -78,4 +78,8 @@ model InferenceLog {
   @@index([createdAt])
   @@index([provider, model, createdAt])
   @@index([status, createdAt])
+  // Covers the per-conversation token-budget query in `src/lib/budget.ts`
+  // (`WHERE conversationId = ? AND status = 'success'`). Without this the
+  // budget check scans every log row in the conversation on each new turn.
+  @@index([conversationId, status])
 }
