@@ -28,8 +28,12 @@ export function priceFor(provider: string, model: string): PriceRow | undefined 
   return PRICES[`${provider}:${model}`];
 }
 
-// Compute USD cost for one call. Returns null if we don't have a rate for this
-// (provider, model) pair — the dashboard can then either skip or surface "unknown".
+// Compute USD cost for one call. Returns null when we can't compute a real
+// number — either we don't have a rate for the (provider, model) pair, or
+// the call has no usage data (error / cancelled before the usage chunk).
+// Returning null instead of 0 keeps the dashboard's SUM honest: $0 means
+// "the call legitimately cost nothing" (e.g. fully cached prompt at zero
+// rate), not "we don't know."
 export function computeCostUsd(opts: {
   provider: string;
   model: string;
@@ -38,9 +42,11 @@ export function computeCostUsd(opts: {
 }): number | null {
   const rate = priceFor(opts.provider, opts.model);
   if (!rate) return null;
+  // If we don't have token counts at all, we can't compute cost. This is the
+  // normal case for failed / cancelled calls before the usage chunk arrives.
+  if (opts.promptTokens == null && opts.completionTokens == null) return null;
   const inTok = opts.promptTokens ?? 0;
   const outTok = opts.completionTokens ?? 0;
-  if (inTok === 0 && outTok === 0) return 0;
   const cost = (inTok / 1_000_000) * rate.input + (outTok / 1_000_000) * rate.output;
   // Six decimals — sub-cent costs are common.
   return Math.round(cost * 1_000_000) / 1_000_000;
