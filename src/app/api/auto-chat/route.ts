@@ -10,18 +10,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI, { AzureOpenAI } from "openai";
 import { prisma } from "@/lib/prisma";
-import {
-  installAutoInstrumentation,
-  withConversation,
-} from "@/lib/instrument";
+import { withConversation } from "@/lib/instrument";
 import { rateLimit, ipFromHeaders } from "@/lib/rate-limit";
+import { checkConversationBudget } from "@/lib/budget";
 import { z } from "zod";
+
+// Auto-instrumentation is installed by `src/instrumentation.ts` at server boot,
+// so by the time this route runs, `OpenAI.Chat.Completions.prototype.create`
+// is already patched. Nothing to do here — just write normal SDK code.
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-// Install once per process. Idempotent — calling twice is a no-op.
-installAutoInstrumentation();
 
 const requestSchema = z.object({
   conversationId: z.string().optional(),
@@ -87,6 +86,14 @@ export async function POST(req: NextRequest) {
   if (!conversationId) {
     const convo = await prisma.conversation.create({ data: { title: message.slice(0, 80) } });
     conversationId = convo.id;
+  } else {
+    const budget = await checkConversationBudget(conversationId);
+    if (!budget.allowed) {
+      return NextResponse.json(
+        { error: "conversation_token_cap_exceeded", usedTokens: budget.used, cap: budget.cap },
+        { status: 429 }
+      );
+    }
   }
   await prisma.message.create({ data: { conversationId, role: "user", content: message } });
 
@@ -112,7 +119,14 @@ export async function POST(req: NextRequest) {
   // No facade, no SDK of ours — just the raw OpenAI SDK. The monkey patch
   // captures latency, TTFB, tokens, finish reason, errors, and writes to
   // InferenceLog through the same ingest pipeline.
+  //
+  // We thread an AbortController so a browser disconnect aborts the upstream
+  // call (and the monkey patch records `status: "cancelled"` instead of
+  // burning tokens to completion).
   const convoIdLocal = conversationId;
+  const controller = new AbortController();
+  req.signal.addEventListener("abort", () => controller.abort());
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(streamCtl) {
@@ -123,11 +137,14 @@ export async function POST(req: NextRequest) {
       let assembled = "";
       try {
         await withConversation(convoIdLocal, async () => {
-          const upstream = await client.chat.completions.create({
-            model: model ?? defaultModel ?? "gpt-4o-mini",
-            messages,
-            stream: true,
-          });
+          const upstream = await client.chat.completions.create(
+            {
+              model: model ?? defaultModel ?? "gpt-4o-mini",
+              messages,
+              stream: true,
+            },
+            { signal: controller.signal }
+          );
           for await (const chunk of upstream as any) {
             const delta = chunk?.choices?.[0]?.delta?.content ?? "";
             if (delta) {
@@ -136,8 +153,8 @@ export async function POST(req: NextRequest) {
             }
           }
         });
-      } catch (err) {
-        console.error("[auto-chat] stream error", err);
+      } catch (err: any) {
+        if (err?.name !== "AbortError") console.error("[auto-chat] stream error", err);
       } finally {
         if (assembled.length > 0) {
           await prisma.message.create({
