@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { withConversation } from "@/lib/instrument";
 import { rateLimit, ipFromHeaders } from "@/lib/rate-limit";
 import { checkConversationBudget } from "@/lib/budget";
+import { azureConfig, openaiApiKey, groqApiKey } from "@/lib/provider-config";
 import { z } from "zod";
 
 // Auto-instrumentation is installed by `src/instrumentation.ts` at server boot,
@@ -20,7 +21,8 @@ import { z } from "zod";
 // is already patched. Nothing to do here — just write normal SDK code.
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// See /api/chat — 5-minute cap so reasoning-model streams aren't cut short.
+export const maxDuration = 300;
 
 const requestSchema = z.object({
   conversationId: z.string().optional(),
@@ -31,34 +33,29 @@ const requestSchema = z.object({
 const CHAT_RATE_LIMIT = Number(process.env.CHAT_RATE_LIMIT_PER_MIN ?? "30");
 
 function buildClient() {
-  if (
-    process.env.AZURE_OPENAI_API_KEY &&
-    process.env.AZURE_OPENAI_ENDPOINT &&
-    process.env.AZURE_OPENAI_DEPLOYMENT
-  ) {
+  // Provider detection is shared with /api/chat via `provider-config.ts`.
+  // Adding a new env var = update one place; both routes pick it up.
+  const azure = azureConfig();
+  if (azure) {
     return {
       client: new AzureOpenAI({
-        apiKey: process.env.AZURE_OPENAI_API_KEY,
-        endpoint: process.env.AZURE_OPENAI_ENDPOINT,
-        apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? "2025-01-01-preview",
-        deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+        apiKey: azure.apiKey,
+        endpoint: azure.endpoint,
+        apiVersion: azure.apiVersion,
+        deployment: azure.deployment,
       }),
       // For Azure the "model" arg is actually the deployment name.
-      defaultModel: process.env.AZURE_OPENAI_DEPLOYMENT,
+      defaultModel: azure.deployment,
     };
   }
-  if (process.env.OPENAI_API_KEY) {
-    return {
-      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-      defaultModel: "gpt-4o-mini",
-    };
+  const openaiKey = openaiApiKey();
+  if (openaiKey) {
+    return { client: new OpenAI({ apiKey: openaiKey }), defaultModel: "gpt-4o-mini" };
   }
-  if (process.env.GROQ_API_KEY) {
+  const groqKey = groqApiKey();
+  if (groqKey) {
     return {
-      client: new OpenAI({
-        apiKey: process.env.GROQ_API_KEY,
-        baseURL: "https://api.groq.com/openai/v1",
-      }),
+      client: new OpenAI({ apiKey: groqKey, baseURL: "https://api.groq.com/openai/v1" }),
       defaultModel: "llama-3.3-70b-versatile",
     };
   }

@@ -4,13 +4,17 @@ import { QueueLogSink } from "@/lib/queue";
 import { prisma } from "@/lib/prisma";
 import { rateLimit, ipFromHeaders } from "@/lib/rate-limit";
 import { checkConversationBudget } from "@/lib/budget";
+import { azureConfig, openaiApiKey, groqApiKey } from "@/lib/provider-config";
 import { z } from "zod";
 
 // Per-IP rate limit on the chat endpoint. Cheap defense against runaway clients.
 const CHAT_RATE_LIMIT = Number(process.env.CHAT_RATE_LIMIT_PER_MIN ?? "30");
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Cap streaming chats at 5 minutes. Long reasoning models can run well past
+// 60s; cutting too early truncates the response. The `finally` in the SDK
+// still fires on timeout so we emit a log row either way.
+export const maxDuration = 300;
 
 const requestSchema = z.object({
   conversationId: z.string().optional(),
@@ -94,22 +98,10 @@ export async function POST(req: NextRequest) {
   });
 
   // Last 20 messages so we don't blow the token budget. Take newest, then reverse for chronology.
-  const azure =
-    process.env.AZURE_OPENAI_API_KEY &&
-    process.env.AZURE_OPENAI_ENDPOINT &&
-    process.env.AZURE_OPENAI_DEPLOYMENT
-      ? {
-          apiKey: process.env.AZURE_OPENAI_API_KEY,
-          endpoint: process.env.AZURE_OPENAI_ENDPOINT,
-          apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? "2025-01-01-preview",
-          deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
-        }
-      : undefined;
-
   const sdk = new LLMClient(logSink, {
-    azure,
-    openaiApiKey: process.env.OPENAI_API_KEY,
-    groqApiKey: process.env.GROQ_API_KEY,
+    azure: azureConfig() ?? undefined,
+    openaiApiKey: openaiApiKey(),
+    groqApiKey: groqApiKey(),
   });
 
   const configured = sdk.configuredProviders();
@@ -125,7 +117,7 @@ export async function POST(req: NextRequest) {
   const resolvedModel =
     model ??
     (resolvedProvider === "openai"
-      ? (azure?.deployment ?? "gpt-4o-mini")
+      ? (azureConfig()?.deployment ?? "gpt-4o-mini")
       : resolvedProvider === "groq"
         ? "llama-3.3-70b-versatile"
         : "claude-3-5-sonnet");
