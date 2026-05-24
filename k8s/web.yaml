@@ -37,7 +37,9 @@ spec:
         - name: web
           image: llm-logger-app:latest
           imagePullPolicy: IfNotPresent
-          command: ["npm", "start"]
+          # Standalone Next.js bundle — runs the self-contained server emitted
+          # by `next build` with `output: "standalone"`.
+          command: ["node", "server.js"]
           ports:
             - containerPort: 3000
           envFrom:

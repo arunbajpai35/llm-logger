@@ -28,7 +28,9 @@ services:
       retries: 10
 
   app:
-    build: .
+    build:
+      context: .
+      target: web-runner
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,10 +49,16 @@ services:
       NODE_ENV: production
     ports:
       - "3000:3000"
-    command: sh -c "npx prisma migrate deploy && npm start"
+    # The standalone bundle has no Prisma CLI, so we can't `migrate deploy`
+    # from this container. The k8s Job handles migrations there; for compose
+    # we rely on the worker container (which keeps the full node_modules and
+    # CLI) to run migrations on startup before draining.
+    command: ["node", "server.js"]
 
   worker:
-    build: .
+    build:
+      context: .
+      target: worker-runner
     restart: unless-stopped
     depends_on:
       postgres:
@@ -60,7 +68,8 @@ services:
     environment:
       DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
       REDIS_URL: redis://redis:6379
-    command: npm run worker
+    # Run migrations on worker boot (worker image has the Prisma CLI).
+    command: sh -c "npx prisma migrate deploy && npm run worker"
 
 volumes:
   pgdata:

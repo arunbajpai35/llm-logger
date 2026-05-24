@@ -21,7 +21,9 @@ spec:
               done
       containers:
         - name: migrate
-          image: llm-logger-app:latest
+          # The web image is the Next.js standalone bundle and has no Prisma
+          # CLI. Use the worker image which still has node_modules + the CLI.
+          image: llm-logger-worker:latest
           imagePullPolicy: IfNotPresent
           command: ["npx", "prisma", "migrate", "deploy"]
           envFrom:
