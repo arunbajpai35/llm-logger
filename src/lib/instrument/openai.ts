@@ -28,12 +28,18 @@ export function instrumentOpenAI(): boolean {
     patchArgs: (args) => {
       // Force-enable usage emission on the final chunk for streaming calls.
       // OpenAI only includes `usage` in the stream if stream_options.include_usage
-      // is true. Caller's existing options win if they already set this.
+      // is true. We merge into whatever the caller already passed so other
+      // stream_options (e.g. logprobs config) survive, and an explicit
+      // `include_usage: false` from the caller still wins.
       const [params, opts] = args;
-      if (params?.stream && !params?.stream_options) {
-        return [{ ...params, stream_options: { include_usage: true } }, opts];
-      }
-      return args;
+      if (!params?.stream) return args;
+      return [
+        {
+          ...params,
+          stream_options: { include_usage: true, ...params.stream_options },
+        },
+        opts,
+      ];
     },
     extractRequest: (args) => {
       const params = args[0] ?? {};

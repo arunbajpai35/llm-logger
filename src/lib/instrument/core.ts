@@ -155,7 +155,23 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
     let errorMessage: string | undefined;
 
     const finalArgs = opts.patchArgs ? opts.patchArgs(args) : args;
-    const req = opts.extractRequest(finalArgs);
+    // extractRequest is adapter-supplied, third-party-shaped, and runs on the
+    // hot path before any try/catch around the actual call. If it throws —
+    // bad arg shape, malformed message content — we want a degraded log row,
+    // not a crashed chat request. Fall back to a minimal request shape.
+    let req: NormalizedRequest;
+    try {
+      req = opts.extractRequest(finalArgs);
+    } catch (err) {
+      console.warn(`[instrument:${provider}] extractRequest threw`, err);
+      const params = (finalArgs[0] ?? {}) as { model?: string; stream?: boolean };
+      req = {
+        provider,
+        model: params.model ?? "unknown",
+        inputText: "",
+        stream: !!params.stream,
+      };
+    }
 
     const emit = () => {
       // Fire-and-forget by contract: a logging failure must NEVER propagate
