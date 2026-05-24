@@ -57,6 +57,33 @@ export function currentConversationId(): string | undefined {
   return conversationStore.getStore()?.conversationId;
 }
 
+// Both OpenAI and Anthropic accept message content as either a plain string or
+// an array of typed content blocks (`{type: "text", text}`, `{type: "image_url",
+// ...}`, etc.). The plain-`JSON.stringify` fallback we used before would dump
+// the full base64 data-URI of an attached image into the preview — leaking
+// binary content that PII redaction won't catch and the 500-char truncate
+// won't always cover.
+//
+// This extractor walks the array and keeps text blocks verbatim, replacing
+// non-text blocks with short placeholders so the preview stays useful but
+// can't carry binary payloads.
+export function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block: any) => {
+      if (typeof block === "string") return block;
+      if (block?.type === "text" && typeof block.text === "string") return block.text;
+      if (block?.type === "image_url" || block?.type === "image") return "[image]";
+      if (block?.type === "input_audio" || block?.type === "audio") return "[audio]";
+      if (block?.type === "tool_use" || block?.type === "tool_call") return "[tool_call]";
+      if (block?.type === "tool_result") return "[tool_result]";
+      return `[${block?.type ?? "block"}]`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 // Per-process default sink — same path as the rest of the app:
 // /api/ingest -> BullMQ -> worker -> Postgres.
 let defaultSink: LogSink | null = null;
@@ -256,7 +283,21 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
               if (firstByteMs === undefined) firstByteMs = performance.now() - t0;
               assembled += delta.text;
             }
-            if (delta.usage) usage = delta.usage;
+            // Merge instead of overwrite. Anthropic emits usage twice in a
+            // stream — `message_start` carries input_tokens only, `message_delta`
+            // carries output_tokens only. Overwriting would discard whichever
+            // arrived first (in practice, input_tokens). OpenAI sends the full
+            // usage in one final chunk, where the merge is a no-op overwrite.
+            if (delta.usage) {
+              usage = {
+                prompt: delta.usage.prompt || usage?.prompt || 0,
+                completion: delta.usage.completion || usage?.completion || 0,
+                total:
+                  delta.usage.total ||
+                  (delta.usage.prompt || usage?.prompt || 0) +
+                    (delta.usage.completion || usage?.completion || 0),
+              };
+            }
             if (delta.finish) finish = delta.finish;
             yield chunk;
           }

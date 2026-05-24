@@ -8,7 +8,7 @@
 // structure, different stream event names, different token field names).
 // Adding Google Gen AI or AWS Bedrock follows the same ~40-LOC pattern.
 
-import { patchMethod } from "./core";
+import { patchMethod, extractMessageText } from "./core";
 
 export function instrumentAnthropic(): boolean {
   let mod: any;
@@ -38,7 +38,7 @@ export function instrumentAnthropic(): boolean {
       const system = typeof params.system === "string" ? `system: ${params.system}\n` : "";
       const messages = Array.isArray(params.messages) ? params.messages : [];
       const body = messages
-        .map((m: any) => `${m.role}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
+        .map((m: any) => `${m.role}: ${extractMessageText(m.content)}`)
         .join("\n");
       return {
         provider: "anthropic",
