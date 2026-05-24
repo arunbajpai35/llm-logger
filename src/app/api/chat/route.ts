@@ -3,13 +3,11 @@ import { LLMClient, type ChatMessage } from "@/lib/llm-sdk";
 import { QueueLogSink } from "@/lib/queue";
 import { prisma } from "@/lib/prisma";
 import { rateLimit, ipFromHeaders } from "@/lib/rate-limit";
+import { checkConversationBudget } from "@/lib/budget";
 import { z } from "zod";
 
 // Per-IP rate limit on the chat endpoint. Cheap defense against runaway clients.
 const CHAT_RATE_LIMIT = Number(process.env.CHAT_RATE_LIMIT_PER_MIN ?? "30");
-// Per-conversation token cap. Once a conversation has consumed this many input+output
-// tokens, further requests on it are refused. Bounds runaway loops and abuse.
-const CONVERSATION_TOKEN_CAP = Number(process.env.CONVERSATION_TOKEN_CAP ?? "200000");
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -69,18 +67,13 @@ export async function POST(req: NextRequest) {
     if (existing.status === "cancelled") {
       return new Response(JSON.stringify({ error: "conversation cancelled" }), { status: 409 });
     }
-    // Enforce per-conversation token budget. SUM over successful logs in this convo.
-    const spent = await prisma.inferenceLog.aggregate({
-      where: { conversationId, status: "success" },
-      _sum: { totalTokens: true },
-    });
-    const usedTokens = Number(spent._sum.totalTokens ?? 0);
-    if (usedTokens >= CONVERSATION_TOKEN_CAP) {
+    const budget = await checkConversationBudget(conversationId);
+    if (!budget.allowed) {
       return new Response(
         JSON.stringify({
           error: "conversation_token_cap_exceeded",
-          usedTokens,
-          cap: CONVERSATION_TOKEN_CAP,
+          usedTokens: budget.used,
+          cap: budget.cap,
         }),
         { status: 429, headers: { "content-type": "application/json" } }
       );
