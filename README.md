@@ -121,11 +121,11 @@ See `prisma/schema.prisma`. Headlines:
 3. **Move logs to Clickhouse.** Keep `Conversation` and `Message` in Postgres; ship `InferenceLog` to Clickhouse for cheap aggregations at scale.
 4. **PII redaction with Presidio** (or a small classifier) instead of regex. Add a per-org allowlist of "this is OK to log."
 5. **Auth + multi-tenancy.** `OrgId` on every row, RLS in Postgres, API keys for the SDK so external apps can ship logs.
-6. **Cost tracking.** Multiply tokens by a per-model price table; surface $/conversation, $/user, $/model.
-7. **Tracing.** OpenTelemetry spans around every LLM call. Send to Tempo/Jaeger; correlate dashboard metrics with trace IDs.
-8. **Anthropic + Gemini adapters.** Interface is already there; ~30 lines each.
-9. **Tests.** Vitest for the SDK wrapper (the part most worth pinning down) + a Playwright happy-path for the chat UI.
-10. **k8s deploy.** Helm chart with separate deployments for `web`, `worker`, `postgres`, `redis`, HPA on the worker.
+6. **OpenTelemetry GenAI spans.** Emit alongside our schema so any OTel collector can consume the same telemetry. The patch framework's `LogSink` interface is the seam — an OTel exporter slots in beside `QueueLogSink`.
+7. **Gemini + Bedrock adapters.** OpenAI and Anthropic ship; Google Gen AI and AWS Bedrock are each ~40 LOC against the existing `patchMethod` interface.
+8. **Tests.** Vitest cases for `src/lib/instrument/core.ts` — the state machine (CLOSED/OPEN/HALF_OPEN), AsyncLocalStorage propagation, stream-vs-non-stream branching, and error/cancel classification all benefit from explicit coverage. Plus a Playwright happy-path for the chat UI.
+9. **Bounded output buffer.** The patch currently holds the entire streamed response in memory until emit-time `preview()` truncates it. Fine at ≤4k-token responses; for 100k-token completions we'd want a rolling buffer capped at preview length + ellipsis.
+10. **Streaming-never-iterated edge case.** If a caller does `const s = await create({stream: true})` and never iterates `s`, the wrapped generator's `finally` never runs and no log is emitted. Known shape limitation of wrapping around an async iterable; the fix is intrusive (synthetic `setTimeout` deferred emit). Documented; not patched.
 
 ## Performance
 
