@@ -288,14 +288,21 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
             // carries output_tokens only. Overwriting would discard whichever
             // arrived first (in practice, input_tokens). OpenAI sends the full
             // usage in one final chunk, where the merge is a no-op overwrite.
+            //
+            // ALWAYS recompute `total` from the merged prompt + completion.
+            // The Anthropic adapter sends a placeholder `total = output_tokens`
+            // in `message_delta` (it can't know the input count at that point),
+            // and `total || (prompt + completion)` would short-circuit to the
+            // placeholder. Recomputing here ignores the placeholder and stays
+            // a no-op for OpenAI (which sends the real total in one chunk).
             if (delta.usage) {
+              const mergedPrompt = delta.usage.prompt || usage?.prompt || 0;
+              const mergedCompletion =
+                delta.usage.completion || usage?.completion || 0;
               usage = {
-                prompt: delta.usage.prompt || usage?.prompt || 0,
-                completion: delta.usage.completion || usage?.completion || 0,
-                total:
-                  delta.usage.total ||
-                  (delta.usage.prompt || usage?.prompt || 0) +
-                    (delta.usage.completion || usage?.completion || 0),
+                prompt: mergedPrompt,
+                completion: mergedCompletion,
+                total: mergedPrompt + mergedCompletion,
               };
             }
             if (delta.finish) finish = delta.finish;
