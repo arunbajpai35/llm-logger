@@ -19,6 +19,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { preview } from "../redact";
 import { QueueLogSink } from "../queue";
+import { breakerFor, CircuitOpenError } from "../circuit-breaker";
 import type { LogSink, InferenceLogPayload } from "../llm-sdk";
 
 // AsyncLocalStorage so the patched method can pick up `conversationId`
@@ -29,10 +30,24 @@ import type { LogSink, InferenceLogPayload } from "../llm-sdk";
 //   );
 //
 // If no context is set, the log is still emitted but with no convo association.
+//
+// **Pin to globalThis** because Next.js's webpack can split this module across
+// multiple bundles (one per route chunk + the instrumentation bundle). Each
+// bundle would otherwise get its OWN `new AsyncLocalStorage()` instance — the
+// route writes to one ALS, the patched method reads from another, and the
+// conversationId silently goes missing. The Symbol.for() key gives us a
+// process-wide singleton across all module instances.
 export interface CallContext {
   conversationId?: string;
 }
-export const conversationStore = new AsyncLocalStorage<CallContext>();
+const STORE_KEY = Symbol.for("llm-logger.instrument.conversationStore");
+type GlobalWithStore = typeof globalThis & {
+  [STORE_KEY]?: AsyncLocalStorage<CallContext>;
+};
+const g = globalThis as GlobalWithStore;
+export const conversationStore: AsyncLocalStorage<CallContext> =
+  g[STORE_KEY] ?? new AsyncLocalStorage<CallContext>();
+g[STORE_KEY] = conversationStore;
 
 export function withConversation<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
   return conversationStore.run({ conversationId }, fn);
@@ -143,29 +158,63 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
     const req = opts.extractRequest(finalArgs);
 
     const emit = () => {
-      const completedAt = new Date();
-      const latencyMs = Math.round(performance.now() - t0);
-      void getSink().emit({
-        requestId,
-        conversationId,
-        provider,
-        model: req.model,
-        status,
-        errorMessage,
-        latencyMs,
-        timeToFirstByteMs: firstByteMs !== undefined ? Math.round(firstByteMs) : undefined,
-        promptTokens: usage?.prompt,
-        completionTokens: usage?.completion,
-        totalTokens: usage?.total,
-        inputPreview: preview(req.inputText) ?? undefined,
-        outputPreview: preview(assembled) ?? undefined,
-        metadata: { finishReason: finish, source: "auto-instrument" },
-        startedAt: startedAt.toISOString(),
-        completedAt: completedAt.toISOString(),
-      } satisfies InferenceLogPayload);
+      // Fire-and-forget by contract: a logging failure must NEVER propagate
+      // back to the LLM caller. `await`ing would block the chat path on
+      // ingest; not catching would leak a sync throw out of getSink().emit()
+      // (e.g. BullMQ in a bad state, sink misconfigured) up to the user.
+      try {
+        const completedAt = new Date();
+        const latencyMs = Math.round(performance.now() - t0);
+        const result = getSink().emit({
+          requestId,
+          conversationId,
+          provider,
+          model: req.model,
+          status,
+          errorMessage,
+          latencyMs,
+          timeToFirstByteMs: firstByteMs !== undefined ? Math.round(firstByteMs) : undefined,
+          promptTokens: usage?.prompt,
+          completionTokens: usage?.completion,
+          totalTokens: usage?.total,
+          inputPreview: preview(req.inputText) ?? undefined,
+          outputPreview: preview(assembled) ?? undefined,
+          metadata: { finishReason: finish, source: "auto-instrument" },
+          startedAt: startedAt.toISOString(),
+          completedAt: completedAt.toISOString(),
+        } satisfies InferenceLogPayload);
+        // Catch async rejections too (`emit` may be sync or async per the
+        // LogSink contract).
+        if (result && typeof (result as Promise<void>).then === "function") {
+          (result as Promise<void>).catch((err) =>
+            console.error("[instrument] sink emit rejected", err)
+          );
+        }
+      } catch (err) {
+        console.error("[instrument] sink emit threw", err);
+      }
     };
 
+    // Caller-provided abort signal (OpenAI SDK passes it via `options.signal`,
+    // i.e. args[1].signal). We use it as a ground-truth cancel check because
+    // different SDKs wrap AbortError into their own error class — checking
+    // `err.name === "AbortError"` alone misses e.g. OpenAI's
+    // `APIUserAbortError`. If the signal is aborted, we treat the outcome as
+    // cancelled regardless of how the underlying SDK surfaced it.
+    const callerSignal: AbortSignal | undefined =
+      (args[1] as any)?.signal ?? (args[0] as any)?.signal;
+    const wasCancelled = (err: any) =>
+      err?.name === "AbortError" ||
+      err?.name === "APIUserAbortError" ||
+      callerSignal?.aborted === true;
+
+    // Circuit breaker — same per-process, per-provider instance the explicit
+    // facade uses, so a string of upstream failures opens the breaker for
+    // ALL paths (facade, monkey-patched, manual). User cancels do not trip it.
+    const breaker = breakerFor(provider);
+
     try {
+      breaker.precheck();
       const result = await original.apply(this, finalArgs);
 
       if (!req.stream) {
@@ -173,6 +222,7 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
         assembled = norm.outputText;
         usage = norm.usage;
         finish = norm.finish;
+        breaker.markSuccess();
         emit();
         return result;
       }
@@ -194,12 +244,21 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
             if (delta.finish) finish = delta.finish;
             yield chunk;
           }
-        } catch (err: any) {
-          if (err?.name === "AbortError") {
+          // Ground-truth cancel check: the SDK may have exited the iterator
+          // cleanly (no throw) when the caller aborted. Treat that as cancel.
+          if (callerSignal?.aborted) {
             status = "cancelled";
+          } else {
+            breaker.markSuccess();
+          }
+        } catch (err: any) {
+          if (wasCancelled(err)) {
+            status = "cancelled";
+            // user cancel — do NOT count against breaker
           } else {
             status = "error";
             errorMessage = err?.message ?? String(err);
+            breaker.markFailure();
           }
           throw err;
         } finally {
@@ -208,11 +267,15 @@ export function patchMethod<TArgs extends any[], TResp>(opts: {
       })();
       return wrappedStream;
     } catch (err: any) {
-      if (err?.name === "AbortError") {
+      if (err instanceof CircuitOpenError) {
+        status = "error";
+        errorMessage = `circuit_open:${provider}`;
+      } else if (wasCancelled(err)) {
         status = "cancelled";
       } else {
         status = "error";
         errorMessage = err?.message ?? String(err);
+        breaker.markFailure();
       }
       emit();
       throw err;
@@ -307,9 +370,11 @@ export async function logInference<T>(
     }
     throw err;
   } finally {
-    const completedAt = new Date();
-    const latencyMs = Math.round(performance.now() - t0);
-    void getSink().emit({
+    // Same fire-and-forget guard as patchMethod above.
+    try {
+      const completedAt = new Date();
+      const latencyMs = Math.round(performance.now() - t0);
+      const result = getSink().emit({
       requestId,
       conversationId,
       provider: req.provider,
@@ -327,5 +392,13 @@ export async function logInference<T>(
       startedAt: startedAt.toISOString(),
       completedAt: completedAt.toISOString(),
     } satisfies InferenceLogPayload);
+      if (result && typeof (result as Promise<void>).then === "function") {
+        (result as Promise<void>).catch((err) =>
+          console.error("[logInference] sink emit rejected", err)
+        );
+      }
+    } catch (err) {
+      console.error("[logInference] sink emit threw", err);
+    }
   }
 }

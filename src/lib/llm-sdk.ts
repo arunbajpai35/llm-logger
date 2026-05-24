@@ -231,29 +231,39 @@ export class LLMClient {
         breaker.markFailure();
       }
     } finally {
-      const completedAt = new Date();
-      const latencyMs = Math.round(performance.now() - startMs);
-      const inputText = req.messages.map((m) => `${m.role}: ${m.content}`).join("\n");
-
-      // Fire-and-forget. Don't await — the route should return first.
-      void this.sink.emit({
-        requestId,
-        conversationId: req.conversationId,
-        provider,
-        model,
-        status,
-        errorMessage,
-        latencyMs,
-        timeToFirstByteMs: firstByteMs ? Math.round(firstByteMs) : undefined,
-        promptTokens: usage?.prompt,
-        completionTokens: usage?.completion,
-        totalTokens: usage?.total,
-        inputPreview: preview(inputText) ?? undefined,
-        outputPreview: preview(assembled) ?? undefined,
-        metadata: { finishReason: finish },
-        startedAt: startedAt.toISOString(),
-        completedAt: completedAt.toISOString(),
-      });
+      // Fire-and-forget. Don't await — the route should return first. Also
+      // guard against sync throws / async rejections out of the sink so a
+      // broken log path never breaks the chat path.
+      try {
+        const completedAt = new Date();
+        const latencyMs = Math.round(performance.now() - startMs);
+        const inputText = req.messages.map((m) => `${m.role}: ${m.content}`).join("\n");
+        const result = this.sink.emit({
+          requestId,
+          conversationId: req.conversationId,
+          provider,
+          model,
+          status,
+          errorMessage,
+          latencyMs,
+          timeToFirstByteMs: firstByteMs !== undefined ? Math.round(firstByteMs) : undefined,
+          promptTokens: usage?.prompt,
+          completionTokens: usage?.completion,
+          totalTokens: usage?.total,
+          inputPreview: preview(inputText) ?? undefined,
+          outputPreview: preview(assembled) ?? undefined,
+          metadata: { finishReason: finish },
+          startedAt: startedAt.toISOString(),
+          completedAt: completedAt.toISOString(),
+        });
+        if (result && typeof (result as Promise<void>).then === "function") {
+          (result as Promise<void>).catch((err) =>
+            console.error("[LLMClient] sink emit rejected", err)
+          );
+        }
+      } catch (err) {
+        console.error("[LLMClient] sink emit threw", err);
+      }
     }
   }
 }
