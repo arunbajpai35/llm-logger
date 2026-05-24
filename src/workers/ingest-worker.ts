@@ -56,8 +56,14 @@ worker.on("completed", (job) => console.log("[worker] ok", job.id));
 
 const shutdown = async (signal: string) => {
   console.log(`[worker] ${signal} received, draining`);
+  // Order matters:
+  //   1. close() lets in-flight jobs finish (BullMQ awaits the handler).
+  //   2. quit() closes the Redis connection cleanly.
+  //   3. $disconnect() returns Postgres connections to the pool so we don't
+  //      leave a handful of sessions hanging until Postgres GCs them.
   await worker.close();
   await queueConnection.quit();
+  await prisma.$disconnect();
   process.exit(0);
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));
