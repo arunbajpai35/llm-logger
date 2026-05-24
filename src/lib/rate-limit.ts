@@ -26,19 +26,38 @@ export async function rateLimit(
   const windowKey = Math.floor(Date.now() / windowMs);
   const key = `rl:${scope}:${windowKey}`;
 
-  // Pipeline: INCR + PEXPIRE in one round-trip. EXPIRE is idempotent — only the
-  // first call in this window actually sets it; later calls reset to the same TTL
-  // which is fine (cost is negligible).
-  const [countStr, ttlStr] = (await queueConnection
+  // Pipeline: INCR + PEXPIRE + PTTL in one round-trip. EXPIRE is idempotent —
+  // only the first call in this window actually sets it; later calls reset
+  // to the same TTL which is fine.
+  //
+  // ioredis exec() returns `[Error|null, Reply][]`. We MUST check tuple[0] —
+  // if any command errored (Redis hiccup, network blip, MULTI rejected),
+  // tuple[1] will be null and our previous code coerced that to "0", silently
+  // allowing every request through. Now we fail closed instead: on any
+  // pipeline error we deny the request and surface resetMs=0 so the caller
+  // can retry quickly once Redis recovers.
+  const res = await queueConnection
     .multi()
     .incr(key)
     .pexpire(key, windowMs)
     .pttl(key)
-    .exec()
-    .then((res) => (res ?? []).map((r) => (r?.[1] as string | number | null)?.toString() ?? "0"))) as string[];
+    .exec();
 
-  const count = Number(countStr);
-  const resetMs = Math.max(0, Number(ttlStr));
+  if (!res) {
+    return { allowed: false, count: max + 1, limit: max, resetMs: 0 };
+  }
+  const incrRes = res[0];
+  const ttlRes = res[2];
+  if (incrRes?.[0] || ttlRes?.[0]) {
+    console.warn("[rate-limit] redis pipeline error, denying request", {
+      incr: incrRes?.[0]?.message,
+      ttl: ttlRes?.[0]?.message,
+    });
+    return { allowed: false, count: max + 1, limit: max, resetMs: 0 };
+  }
+
+  const count = Number(incrRes?.[1] ?? 0);
+  const resetMs = Math.max(0, Number(ttlRes?.[1] ?? 0));
   return {
     allowed: count <= max,
     count,
