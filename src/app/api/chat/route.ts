@@ -41,7 +41,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid JSON" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
   const parsed = requestSchema.safeParse(body);
   if (!parsed.success) {
     return new Response(JSON.stringify({ error: parsed.error.issues }), {

@@ -15,15 +15,26 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
 
 // PATCH to update status (e.g. cancel)
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const body = await req.json();
-  if (body.status && !["active", "cancelled", "completed"].includes(body.status)) {
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+  }
+  if (body?.status && !["active", "cancelled", "completed"].includes(body.status)) {
     return NextResponse.json({ error: "invalid status" }, { status: 400 });
   }
-  const updated = await prisma.conversation.update({
-    where: { id: params.id },
-    data: { status: body.status },
-  });
-  return NextResponse.json(updated);
+  try {
+    const updated = await prisma.conversation.update({
+      where: { id: params.id },
+      data: { status: body?.status },
+    });
+    return NextResponse.json(updated);
+  } catch {
+    // Prisma throws P2025 when the record doesn't exist. Surface as 404
+    // rather than letting the 500 leak the Prisma stack to the client.
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
 }
 
 export async function DELETE(_: NextRequest, { params }: { params: { id: string } }) {
