@@ -19,6 +19,10 @@ const PRICES: Record<string, PriceRow> = {
   "groq:llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
   "groq:llama-3.1-8b-instant": { input: 0.05, output: 0.08 },
   "groq:mixtral-8x7b-32768": { input: 0.24, output: 0.24 },
+  // Alias for /api/custom-chat which posts as provider="custom-groq-fetch"
+  // (it's the same upstream, just hit via raw HTTP to demo logInference).
+  // Without this alias every custom-chat row gets costUsd: null.
+  "custom-groq-fetch:llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
   // Anthropic (kept here for when the adapter ships).
   "anthropic:claude-3-5-sonnet": { input: 3.0, output: 15.0 },
   "anthropic:claude-3-5-haiku": { input: 0.8, output: 4.0 },
