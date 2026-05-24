@@ -38,7 +38,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+      # connection_limit=10 matches worker concurrency (8) with headroom for
+      # the web pod's per-request Prisma operations. Prisma's default is
+      # `num_cpus * 2 + 1` which is 3 on a single-CPU container — that
+      # serializes worker upserts and bottlenecks throughput.
+      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger?connection_limit=10
     command: ["npx", "prisma", "migrate", "deploy"]
     restart: "no"
 
@@ -55,7 +59,11 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+      # connection_limit=10 matches worker concurrency (8) with headroom for
+      # the web pod's per-request Prisma operations. Prisma's default is
+      # `num_cpus * 2 + 1` which is 3 on a single-CPU container — that
+      # serializes worker upserts and bottlenecks throughput.
+      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger?connection_limit=10
       REDIS_URL: redis://redis:6379
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -81,7 +89,11 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+      # connection_limit=10 matches worker concurrency (8) with headroom for
+      # the web pod's per-request Prisma operations. Prisma's default is
+      # `num_cpus * 2 + 1` which is 3 on a single-CPU container — that
+      # serializes worker upserts and bottlenecks throughput.
+      DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger?connection_limit=10
       REDIS_URL: redis://redis:6379
     command: ["npm", "run", "worker"]
 

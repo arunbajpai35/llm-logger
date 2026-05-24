@@ -4,6 +4,10 @@ metadata:
   name: app-config
   namespace: llm-logger
 data:
-  DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger
+  # connection_limit=10 matches the worker's BullMQ concurrency (8) with
+  # headroom for web-pod per-request Prisma ops. Prisma's default is
+  # num_cpus*2+1 (3 on a 1-CPU container), which serializes upserts and caps
+  # effective throughput. See README "Performance".
+  DATABASE_URL: postgresql://llm:llm@postgres:5432/llmlogger?connection_limit=10
   REDIS_URL: redis://redis:6379
   NODE_ENV: production
